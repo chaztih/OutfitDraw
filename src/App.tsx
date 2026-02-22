@@ -15,10 +15,20 @@ import {
   Trash2,
   Check,
   X,
-  CreditCard
+  CreditCard,
+  LogIn,
+  LogOut,
+  User
 } from 'lucide-react';
 
 // Types
+interface UserData {
+  id: string;
+  name: string;
+  email: string;
+  picture: string;
+}
+
 interface OutfitRecord {
   id: string;
   date: string;
@@ -46,6 +56,7 @@ const STORAGE_KEY = 'item_records_v1';
 
 export default function App() {
   const [view, setView] = useState<'home' | 'result' | 'records' | 'donate'>('home');
+  const [user, setUser] = useState<UserData | null>(null);
   const [currentItem, setCurrentItem] = useState<string>('');
   const [records, setRecords] = useState<OutfitRecord[]>([]);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -54,6 +65,52 @@ export default function App() {
   const [showCamera, setShowCamera] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Fetch user data
+  const fetchUser = async () => {
+    try {
+      const res = await fetch('/api/user');
+      const data = await res.json();
+      setUser(data.user);
+    } catch (e) {
+      console.error("Failed to fetch user", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchUser();
+    
+    const handleMessage = (event: MessageEvent) => {
+      const origin = event.origin;
+      if (!origin.endsWith('.run.app') && !origin.includes('localhost')) {
+        return;
+      }
+      if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
+        fetchUser();
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  const handleLogin = async () => {
+    try {
+      const res = await fetch('/api/auth/google/url');
+      const { url } = await res.json();
+      window.open(url, 'google_oauth', 'width=500,height=600');
+    } catch (e) {
+      console.error("Failed to get auth URL", e);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+      setUser(null);
+    } catch (e) {
+      console.error("Failed to logout", e);
+    }
+  };
 
   // Load records
   useEffect(() => {
@@ -149,13 +206,32 @@ export default function App() {
           <Sparkles className="w-5 h-5" />
           穿搭抽籤
         </h1>
-        <div className="flex gap-6 text-sm font-sans uppercase tracking-widest font-semibold">
+        <div className="flex gap-6 text-sm font-sans uppercase tracking-widest font-semibold items-center">
           <button onClick={() => setView('records')} className="hover:opacity-60 transition-opacity flex items-center gap-1">
             <History className="w-4 h-4" /> 紀錄
           </button>
           <button onClick={() => setView('donate')} className="hover:opacity-60 transition-opacity flex items-center gap-1">
             <Heart className="w-4 h-4" /> 贊助
           </button>
+          
+          {user ? (
+            <div className="flex items-center gap-3 pl-4 border-l border-[#5A5A40]/10">
+              <div className="flex items-center gap-2">
+                <img src={user.picture} alt={user.name} className="w-6 h-6 rounded-full border border-[#5A5A40]/10" />
+                <span className="text-[10px] lowercase opacity-60 hidden sm:inline">{user.name}</span>
+              </div>
+              <button onClick={handleLogout} className="hover:text-red-500 transition-colors" title="登出">
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <button 
+              onClick={handleLogin}
+              className="flex items-center gap-1 bg-[#5A5A40] text-white px-3 py-1.5 rounded-full text-[10px] hover:opacity-90 transition-opacity"
+            >
+              <LogIn className="w-3 h-3" /> 登入
+            </button>
+          )}
         </div>
       </nav>
 
