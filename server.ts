@@ -1,129 +1,138 @@
-import express from "express";
-import { createServer as createViteServer } from "vite";
-import session from "express-session";
-import cookieParser from "cookie-parser";
-import { OAuth2Client } from "google-auth-library";
-import dotenv from "dotenv";
+import express from 'express';
+import session from 'express-session';
+import bcrypt from 'bcryptjs';
+import Database from 'better-sqlite3';
+import path from 'path';
+import { createServer as createViteServer } from 'vite';
+import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Extend session type
-declare module "express-session" {
-  interface SessionData {
-    user?: {
-      id: string;
-      name: string;
-      email: string;
-      picture: string;
-    };
-  }
-}
-
 const app = express();
 const PORT = 3000;
+const db = new Database('app.db');
 
-const googleClient = new OAuth2Client(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET
-);
+// Initialize Database
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT
+  );
+  CREATE TABLE IF NOT EXISTS records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    date TEXT,
+    style TEXT,
+    image TEXT,
+    note TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+`);
 
-app.use(cookieParser());
-app.use(express.json());
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "default_secret",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: true,
-      sameSite: "none",
-      httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    },
-  })
-);
+app.use(express.json({ limit: '10mb' }));
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'outfit-draw-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { 
+    secure: false, // Set to true if using HTTPS
+    sameSite: 'lax',
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
+}));
 
-// API Routes
-app.get("/api/auth/google/url", (req, res) => {
-  const redirectUri = `${process.env.APP_URL}/auth/google/callback`;
-  const url = googleClient.generateAuthUrl({
-    access_type: "offline",
-    scope: ["https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/userinfo.email"],
-    redirect_uri: redirectUri,
-  });
-  res.json({ url });
-});
-
-app.get("/auth/google/callback", async (req: any, res) => {
-  const { code } = req.query;
-  const redirectUri = `${process.env.APP_URL}/auth/google/callback`;
+// Auth Routes
+app.post('/api/auth/signup', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Missing fields' });
 
   try {
-    const { tokens } = await googleClient.getToken({
-      code: code as string,
-      redirect_uri: redirectUri,
-    });
-    googleClient.setCredentials(tokens);
-
-    const userInfoResponse = await googleClient.request({
-      url: "https://www.googleapis.com/oauth2/v3/userinfo",
-    });
-
-    const user = userInfoResponse.data as any;
-    (req.session as any).user = {
-      id: user.sub,
-      name: user.name,
-      email: user.email,
-      picture: user.picture,
-    };
-
-    res.send(`
-      <html>
-        <body>
-          <script>
-            if (window.opener) {
-              window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS' }, '*');
-              window.close();
-            } else {
-              window.location.href = '/';
-            }
-          </script>
-          <p>Authentication successful. This window should close automatically.</p>
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    console.error("Error during Google OAuth callback:", error);
-    res.status(500).send("Authentication failed");
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const info = db.prepare('INSERT INTO users (username, password) VALUES (?, ?)').run(username, hashedPassword);
+    (req.session as any).userId = info.lastInsertRowid;
+    res.json({ success: true, user: { username } });
+  } catch (e: any) {
+    if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      res.status(400).json({ error: 'Username already exists' });
+    } else {
+      res.status(500).json({ error: 'Internal error' });
+    }
   }
 });
 
-app.get("/api/user", (req: any, res) => {
-  res.json({ user: (req.session as any).user || null });
+app.post('/api/auth/login', async (req, res) => {
+  const { username, password } = req.body;
+  const user: any = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+
+  if (user && await bcrypt.compare(password, user.password)) {
+    (req.session as any).userId = user.id;
+    res.json({ success: true, user: { username: user.username } });
+  } else {
+    res.status(401).json({ error: 'Invalid credentials' });
+  }
 });
 
-app.post("/api/logout", (req: any, res) => {
+app.post('/api/auth/logout', (req, res) => {
   req.session.destroy(() => {
     res.json({ success: true });
   });
 });
 
-// Vite middleware for development
+app.get('/api/auth/me', (req, res) => {
+  const userId = (req.session as any).userId;
+  if (!userId) return res.status(401).json({ error: 'Not logged in' });
+
+  const user: any = db.prepare('SELECT username FROM users WHERE id = ?').get(userId);
+  if (user) {
+    res.json({ user });
+  } else {
+    res.status(404).json({ error: 'User not found' });
+  }
+});
+
+// Record Routes
+app.get('/api/records', (req, res) => {
+  const userId = (req.session as any).userId;
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const records = db.prepare('SELECT * FROM records WHERE user_id = ? ORDER BY id DESC').all(userId);
+  res.json(records);
+});
+
+app.post('/api/records', (req, res) => {
+  const userId = (req.session as any).userId;
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { date, style, image, note } = req.body;
+  db.prepare('INSERT INTO records (user_id, date, style, image, note) VALUES (?, ?, ?, ?, ?)').run(userId, date, style, image, note);
+  res.json({ success: true });
+});
+
+app.delete('/api/records/:id', (req, res) => {
+  const userId = (req.session as any).userId;
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  db.prepare('DELETE FROM records WHERE id = ? AND user_id = ?').run(req.params.id, userId);
+  res.json({ success: true });
+});
+
+// Vite Integration
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
-    app.get("*", (req, res) => {
-      res.sendFile("dist/index.html", { root: "." });
+    app.use(express.static('dist'));
+    app.get('*', (req, res) => {
+      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

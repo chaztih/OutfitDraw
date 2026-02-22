@@ -16,17 +16,16 @@ import {
   Check,
   X,
   CreditCard,
-  LogIn,
+  User,
   LogOut,
-  User
+  LogIn,
+  UserPlus
 } from 'lucide-react';
 
 // Types
 interface UserData {
-  id: string;
-  name: string;
-  email: string;
-  picture: string;
+  username: string;
+  password: string; // In a real app, this would be hashed
 }
 
 interface OutfitRecord {
@@ -52,11 +51,20 @@ const ITEM_SUGGESTIONS = [
   "黃色衛衣 + 深灰色運動褲 + 復古慢跑鞋 (Yellow Sweatshirt, Charcoal Joggers & Retro Runners)"
 ];
 
-const STORAGE_KEY = 'item_records_v1';
+const USERS_STORAGE_KEY = 'outfit_users_v1';
+const SESSION_STORAGE_KEY = 'outfit_session_v1';
+const RECORDS_PREFIX = 'outfit_records_';
 
 export default function App() {
-  const [view, setView] = useState<'home' | 'result' | 'records' | 'donate'>('home');
-  const [user, setUser] = useState<UserData | null>(null);
+  const [view, setView] = useState<'home' | 'result' | 'records' | 'donate' | 'auth'>('auth');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [currentUser, setCurrentUser] = useState<string | null>(null);
+  
+  // Auth Form State
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+
   const [currentItem, setCurrentItem] = useState<string>('');
   const [records, setRecords] = useState<OutfitRecord[]>([]);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -66,68 +74,82 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Fetch user data
-  const fetchUser = async () => {
-    try {
-      const res = await fetch('/api/user');
-      const data = await res.json();
-      setUser(data.user);
-    } catch (e) {
-      console.error("Failed to fetch user", e);
-    }
-  };
-
+  // Check session on mount
   useEffect(() => {
-    fetchUser();
-    
-    const handleMessage = (event: MessageEvent) => {
-      const origin = event.origin;
-      if (!origin.endsWith('.run.app') && !origin.includes('localhost')) {
+    const session = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (session) {
+      setCurrentUser(session);
+      setView('home');
+    }
+  }, []);
+
+  // Load records for current user
+  useEffect(() => {
+    if (currentUser) {
+      const saved = localStorage.getItem(`${RECORDS_PREFIX}${currentUser}`);
+      if (saved) {
+        try {
+          setRecords(JSON.parse(saved));
+        } catch (e) {
+          console.error("Failed to parse records", e);
+        }
+      } else {
+        setRecords([]);
+      }
+    }
+  }, [currentUser]);
+
+  // Save records for current user
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem(`${RECORDS_PREFIX}${currentUser}`, JSON.stringify(records));
+    }
+  }, [records, currentUser]);
+
+  const handleAuth = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+
+    if (!username || !password) {
+      setAuthError('請填寫所有欄位');
+      return;
+    }
+
+    const usersJson = localStorage.getItem(USERS_STORAGE_KEY);
+    const users: UserData[] = usersJson ? JSON.parse(usersJson) : [];
+
+    if (authMode === 'register') {
+      if (users.find(u => u.username === username)) {
+        setAuthError('帳號已存在');
         return;
       }
-      if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
-        fetchUser();
+      const newUser = { username, password };
+      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify([...users, newUser]));
+      login(username);
+    } else {
+      const user = users.find(u => u.username === username && u.password === password);
+      if (user) {
+        login(username);
+      } else {
+        setAuthError('帳號或密碼錯誤');
       }
-    };
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
-
-  const handleLogin = async () => {
-    try {
-      const res = await fetch('/api/auth/google/url');
-      const { url } = await res.json();
-      window.open(url, 'google_oauth', 'width=500,height=600');
-    } catch (e) {
-      console.error("Failed to get auth URL", e);
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await fetch('/api/logout', { method: 'POST' });
-      setUser(null);
-    } catch (e) {
-      console.error("Failed to logout", e);
-    }
+  const login = (user: string) => {
+    setCurrentUser(user);
+    localStorage.setItem(SESSION_STORAGE_KEY, user);
+    setView('home');
+    setUsername('');
+    setPassword('');
   };
 
-  // Load records
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setRecords(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to parse records", e);
-      }
-    }
-  }, []);
-
-  // Save records
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-  }, [records]);
+  const handleLogout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    setView('auth');
+    setRecords([]);
+  };
 
   const drawItem = () => {
     setIsDrawing(true);
@@ -201,35 +223,44 @@ export default function App() {
       <nav className="fixed top-0 left-0 right-0 bg-white/80 backdrop-blur-md border-b border-[#5A5A40]/10 z-50 px-6 py-4 flex justify-between items-center">
         <h1 
           className="text-xl font-bold tracking-tight cursor-pointer flex items-center gap-2"
-          onClick={() => setView('home')}
+          onClick={() => currentUser && setView('home')}
         >
           <Sparkles className="w-5 h-5" />
           穿搭抽籤
         </h1>
         <div className="flex gap-6 text-sm font-sans uppercase tracking-widest font-semibold items-center">
-          <button onClick={() => setView('records')} className="hover:opacity-60 transition-opacity flex items-center gap-1">
-            <History className="w-4 h-4" /> 紀錄
-          </button>
-          <button onClick={() => setView('donate')} className="hover:opacity-60 transition-opacity flex items-center gap-1">
-            <Heart className="w-4 h-4" /> 贊助
-          </button>
-          
-          {user ? (
-            <div className="flex items-center gap-3 pl-4 border-l border-[#5A5A40]/10">
-              <div className="flex items-center gap-2">
-                <img src={user.picture} alt={user.name} className="w-6 h-6 rounded-full border border-[#5A5A40]/10" />
-                <span className="text-[10px] lowercase opacity-60 hidden sm:inline">{user.name}</span>
-              </div>
-              <button onClick={handleLogout} className="hover:text-red-500 transition-colors" title="登出">
-                <LogOut className="w-4 h-4" />
+          {currentUser ? (
+            <>
+              <button onClick={() => setView('records')} className="hover:opacity-60 transition-opacity flex items-center gap-1">
+                <History className="w-4 h-4" /> 紀錄
               </button>
-            </div>
+              <button onClick={() => setView('donate')} className="hover:opacity-60 transition-opacity flex items-center gap-1">
+                <Heart className="w-4 h-4" /> 贊助
+              </button>
+              <div className="h-4 w-[1px] bg-[#5A5A40]/20 mx-1" />
+              <div className="flex items-center gap-2 group relative">
+                <div className="w-8 h-8 rounded-full bg-[#5A5A40]/10 flex items-center justify-center">
+                  <User className="w-4 h-4" />
+                </div>
+                <span className="hidden md:inline text-[10px] lowercase opacity-60">{currentUser}</span>
+                <button 
+                  onClick={handleLogout}
+                  className="p-2 hover:bg-red-50 text-red-400 rounded-full transition-colors"
+                  title="登出"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            </>
           ) : (
             <button 
-              onClick={handleLogin}
-              className="flex items-center gap-1 bg-[#5A5A40] text-white px-3 py-1.5 rounded-full text-[10px] hover:opacity-90 transition-opacity"
+              onClick={() => {
+                setAuthMode('login');
+                setView('auth');
+              }} 
+              className="hover:opacity-60 transition-opacity flex items-center gap-1"
             >
-              <LogIn className="w-3 h-3" /> 登入
+              <LogIn className="w-4 h-4" /> 登入
             </button>
           )}
         </div>
@@ -237,7 +268,73 @@ export default function App() {
 
       <main className="pt-24 pb-12 px-6 max-w-2xl mx-auto">
         <AnimatePresence mode="wait">
-          {view === 'home' && (
+          {view === 'auth' && (
+            <motion.div 
+              key="auth"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.05 }}
+              className="max-w-md mx-auto"
+            >
+              <div className="bg-white p-10 rounded-[40px] shadow-xl border border-[#5A5A40]/5">
+                <div className="text-center mb-10">
+                  <div className="w-16 h-16 bg-[#f5f5f0] rounded-full flex items-center justify-center mx-auto mb-4">
+                    {authMode === 'login' ? <LogIn className="w-8 h-8" /> : <UserPlus className="w-8 h-8" />}
+                  </div>
+                  <h2 className="text-3xl font-light">{authMode === 'login' ? '歡迎回來' : '建立帳號'}</h2>
+                  <p className="text-sm opacity-60 mt-2">{authMode === 'login' ? '請登入以開始記錄您的穿搭' : '加入我們，開始您的時尚之旅'}</p>
+                </div>
+
+                <form onSubmit={handleAuth} className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-xs font-sans font-bold uppercase tracking-widest opacity-40">帳號</label>
+                    <input 
+                      type="text"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="w-full p-4 rounded-2xl border border-[#5A5A40]/10 focus:outline-none focus:ring-1 focus:ring-[#5A5A40] font-sans"
+                      placeholder="請輸入帳號"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-sans font-bold uppercase tracking-widest opacity-40">密碼</label>
+                    <input 
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full p-4 rounded-2xl border border-[#5A5A40]/10 focus:outline-none focus:ring-1 focus:ring-[#5A5A40] font-sans"
+                      placeholder="請輸入密碼"
+                    />
+                  </div>
+
+                  {authError && (
+                    <p className="text-red-500 text-xs font-sans text-center">{authError}</p>
+                  )}
+
+                  <button 
+                    type="submit"
+                    className="w-full py-4 bg-[#5A5A40] text-white rounded-full font-sans font-bold uppercase tracking-widest hover:opacity-90 transition-opacity"
+                  >
+                    {authMode === 'login' ? '登入' : '註冊'}
+                  </button>
+                </form>
+
+                <div className="mt-8 pt-8 border-t border-[#5A5A40]/10 text-center">
+                  <button 
+                    onClick={() => {
+                      setAuthMode(authMode === 'login' ? 'register' : 'login');
+                      setAuthError('');
+                    }}
+                    className="text-sm font-sans opacity-60 hover:opacity-100 transition-opacity"
+                  >
+                    {authMode === 'login' ? '還沒有帳號？點此註冊' : '已有帳號？點此登入'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {view === 'home' && currentUser && (
             <motion.div 
               key="home"
               initial={{ opacity: 0, y: 20 }}
