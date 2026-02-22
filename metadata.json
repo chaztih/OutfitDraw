@@ -1,0 +1,7 @@
+{
+  "name": "今日穿搭抽籤 (Outfit Draw)",
+  "description": "一個簡單的穿搭抽籤平台，幫助你決定今天的具體單品組合，並記錄你的每日穿搭。",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
